@@ -1,0 +1,276 @@
+#!/usr/bin/env python
+
+from __future__ import annotations
+from dataclasses import dataclass, replace
+from abc import ABC, abstractmethod
+from typing import List, Dict, Protocol, Callable
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Template script using argparse"
+    )
+    parser.add_argument(
+        "-i", "--input", 
+        type=str, 
+        help="Input file path", 
+        required=True
+    )
+    parser.add_argument(
+        "-o", "--output", 
+        type=str, 
+        help="Output file path", 
+        required=False
+    )
+    parser.add_argument(
+        "-v", "--verbose", 
+        action="store_true", 
+        help="Enable verbose mode"
+    )
+    parser.add_argument(
+        "--mode", 
+        choices=["fast", "slow"], 
+        default="fast", 
+        help="Choose mode of operation"
+    )
+    return parser.parse_args()
+
+# --- Domain ---------------------------------------------------------------
+
+@dataclass(frozen=True)
+class State:
+    """État interne minimal. Valeurs normalisées [0, 1].
+    - symbol_flow: continuité et plasticité de la chaîne signifiante (Lacan)
+    - qi: disponibilité fonctionnelle (MTC)
+    - yang: tonus directionnel/agentif (MTC)
+    - limbic: activation limbique moyenne
+    - obsession: intensité des boucles rituelles
+    """
+    symbol_flow: float
+    qi: float
+    yang: float
+    limbic: float
+    obsession: float
+
+    def clamp(self) -> "State":
+        def c(x: float) -> float:
+            return 0.0 if x < 0 else 1.0 if x > 1 else x
+        return replace(
+            self,
+            symbol_flow=c(self.symbol_flow),
+            qi=c(self.qi),
+            yang=c(self.yang),
+            limbic=c(self.limbic),
+            obsession=c(self.obsession),
+        )
+
+@dataclass(frozen=True)
+class Targets:
+    symbol_flow: float = 0.7
+    qi: float = 0.7
+    yang: float = 0.6
+    limbic: float = 0.3
+    obsession: float = 0.2
+
+# --- SOLID Interfaces ----------------------------------------------------
+
+class Intervention(ABC):
+    """SRP: une intervention = une transformation de l'état.
+    OCP: on étend par sous-classes.
+    LSP: toute sous-classe respecte la signature apply.
+    DIP: le pipeline dépend de cette abstraction, pas des concrètes.
+    """
+
+    @abstractmethod
+    def name(self) -> str:
+        ...
+
+    @abstractmethod
+    def apply(self, s: State) -> State:
+        ...
+
+class Evaluator(ABC):
+    """Évalue un état selon divers critères."""
+
+    @abstractmethod
+    def name(self) -> str:
+        ...
+
+    @abstractmethod
+    def assess(self, s: State, t: Targets) -> Dict[str, float]:
+        """Retourne des scores d'atteinte [0,1] par dimension."""
+        ...
+
+# --- Interventions concrètes (exemples) ----------------------------------
+
+class AnalyticTransferScansion(Intervention):
+    """Travail du transfert + scansion. Vise symbol_flow et obsession."""
+
+    def __init__(self, cut_gain: float = 0.1, loop_drop: float = 0.08):
+        self._cut_gain = cut_gain
+        self._loop_drop = loop_drop
+
+    def name(self) -> str:
+        return "analytic.transfer_scansion"
+
+    def apply(self, s: State) -> State:
+        s2 = replace(
+            s,
+            symbol_flow=s.symbol_flow + self._cut_gain * (1 - s.symbol_flow),
+            obsession=s.obsession - self._loop_drop * s.obsession,
+        )
+        return s2.clamp()
+
+class AcuRenDuTonifyYang(Intervention):
+    """Acupuncture Ren/Du, tonification du yang. Vise qi et yang."""
+
+    def __init__(self, qi_gain: float = 0.12, yang_gain: float = 0.15):
+        self._qi_gain = qi_gain
+        self._yang_gain = yang_gain
+
+    def name(self) -> str:
+        return "mtc.acu_ren_du_tonify_yang"
+
+    def apply(self, s: State) -> State:
+        s2 = replace(
+            s,
+            qi=s.qi + self._qi_gain * (1 - s.qi),
+            yang=s.yang + self._yang_gain * (1 - s.yang),
+        )
+        return s2.clamp()
+
+class AutonomicBreathRegulation(Intervention):
+    """Respiration lente + hygiène sommeil. Diminue limbic."""
+
+    def __init__(self, limbic_drop: float = 0.1):
+        self._limbic_drop = limbic_drop
+
+    def name(self) -> str:
+        return "somatic.autonomic_breath"
+
+    def apply(self, s: State) -> State:
+        s2 = replace(
+            s,
+            limbic=s.limbic - self._limbic_drop * s.limbic,
+        )
+        return s2.clamp()
+
+class ERPBreakRituals(Intervention):
+    """ERP/TCC sur rituels. Diminue obsession, légère hausse limbic transitoire."""
+
+    def __init__(self, drop: float = 0.2, limbic_bump: float = 0.05):
+        self._drop = drop
+        self._bump = limbic_bump
+
+    def name(self) -> str:
+        return "cbt.erp_break_rituals"
+
+    def apply(self, s: State) -> State:
+        s2 = replace(
+            s,
+            obsession=s.obsession - self._drop * s.obsession,
+            limbic=s.limbic + self._bump * (1 - s.limbic),
+        )
+        return s2.clamp()
+
+# --- Évaluateurs ---------------------------------------------------------
+
+class TargetAttainment(Evaluator):
+    """Score simple par dimension: 1 - |x - target|."""
+
+    def name(self) -> str:
+        return "eval.target_attainment"
+
+    def assess(self, s: State, t: Targets) -> Dict[str, float]:
+        def score(x: float, goal: float) -> float:
+            d = abs(x - goal)
+            return max(0.0, 1.0 - d)
+        return {
+            "symbol_flow": score(s.symbol_flow, t.symbol_flow),
+            "qi": score(s.qi, t.qi),
+            "yang": score(s.yang, t.yang),
+            "limbic": score(s.limbic, t.limbic),
+            "obsession": score(s.obsession, t.obsession),
+        }
+
+# --- Orchestrateur (DIP sur interfaces) ----------------------------------
+
+class Pipeline:
+    """Coordonne les interventions et agrège les évaluations.
+    - SRP: orchestration.
+    - OCP: ajout d'interventions/évaluateurs sans modifier la classe.
+    - DIP: dépend des abstractions Intervention/Evaluator.
+    """
+
+    def __init__(self, interventions: List[Intervention], evaluators: List[Evaluator]):
+        self._interventions = interventions
+        self._evaluators = evaluators
+
+    def run(self, initial: State, targets: Targets, steps: int = 1) -> Dict[str, object]:
+        s = initial
+        history: List[State] = [s]
+        trace: List[str] = []
+        for _ in range(steps):
+            for itv in self._interventions:
+                s = itv.apply(s)
+                history.append(s)
+                trace.append(itv.name())
+        scores: Dict[str, Dict[str, float]] = {}
+        for ev in self._evaluators:
+            scores[ev.name()] = ev.assess(s, targets)
+        return {
+            "final_state": s,
+            "history": history,
+            "trace": trace,
+            "scores": scores,
+        }
+
+#def main():
+#    args = parse_args()
+#
+#    if args.verbose:
+#        print("[INFO] Verbose mode is on")
+#        print(f"[INFO] Input file: {args.input}")
+#        print(f"[INFO] Output file: {args.output or 'stdout'}")
+#        print(f"[INFO] Mode selected: {args.mode}")
+#
+#    # Example processing
+#    with open(args.input, 'r') as f:
+#        data = f.read()
+#
+#    result = data.upper() if args.mode == "fast" else data.lower()
+#
+#    if args.output:
+#        with open(args.output, 'w') as f:
+#            f.write(result)
+#    else:
+#        print(result)
+
+# --- Exemple d'utilisation -----------------------------------------------
+
+if __name__ == "__main__":
+    #main()
+    init = State(symbol_flow=0.35, qi=0.4, yang=0.3, limbic=0.7, obsession=0.6)
+    goals = Targets()
+
+    pipeline = Pipeline(
+        interventions=[
+            AnalyticTransferScansion(),
+            AcuRenDuTonifyYang(),
+            AutonomicBreathRegulation(),
+            ERPBreakRituals(),
+        ],
+        evaluators=[TargetAttainment()],
+    )
+
+    report = pipeline.run(initial=init, targets=goals, steps=3)
+
+    # Sortie courte
+    print("Final:", report["final_state"])  # State(...)
+    print("Trace:", " -> ".join(report["trace"]))
+    print("Scores:", report["scores"])
+
+
+
+
+
