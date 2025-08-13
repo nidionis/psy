@@ -1,0 +1,206 @@
+#mini-algèbre Python pour modéliser Lacan ↔ MTC, orientée transitions.
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Tuple, List, Callable, Optional
+
+# ---------- Lacan: structures, signifiants, opérations ----------
+
+class Structure(Enum):
+    NEVROSE = auto()
+    PSYCHOSE = auto()
+
+@dataclass(frozen=True)
+class Signifiant:
+    s: str
+    master: bool = False
+    blocking: bool = False
+
+    # Composition signifiante: chaîne (S ⊗ S')
+    def __matmul__(self, other: "Signifiant") -> "Chaine":
+        return Chaine([self, other])
+
+@dataclass
+class Chaine:
+    items: List[Signifiant]
+
+    # Extension de chaîne
+    def __matmul__(self, other: Signifiant | "Chaine") -> "Chaine":
+        if isinstance(other, Signifiant):
+            return Chaine(self.items + [other])
+        return Chaine(self.items + other.items)
+
+    # Scansion: coupure ponctuelle "//"
+    def __truediv__(self, cut: "Scansion") -> "Chaine":
+        return cut.apply(self)
+
+@dataclass(frozen=True)
+class Sujet:
+    structure: Structure
+    # ancrages S1 hors relation
+    ancrages: Tuple[Signifiant, ...] = ()
+
+@dataclass(frozen=True)
+class Transfert:
+    intensite: float  # 0..1
+
+    def applique(self, sujet: Sujet, chaine: Chaine) -> "Etat":
+        charge = sum(1.0 + 0.5*s.master + 1.0*s.blocking for s in chaine.items)
+        risque_effraction = (self.intensite * charge)
+        return Etat(sujet=sujet, chaine=chaine, risque_effraction=risque_effraction)
+
+@dataclass(frozen=True)
+class Scansion:
+    # règle de coupure: stop aux signifiants bloquants
+    def apply(self, chaine: Chaine) -> Chaine:
+        out: List[Signifiant] = []
+        for s in chaine.items:
+            if s.blocking:
+                break
+            out.append(s)
+        return Chaine(out)
+
+@dataclass
+class EffractionSymbolique:
+    seuil: float = 3.0
+
+    def teste(self, etat: "Etat") -> bool:
+        if etat.sujet.structure == Structure.PSYCHOSE:
+            # forclusion → seuil plus bas
+            return etat.risque_effraction >= (self.seuil * 0.5)
+        return etat.risque_effraction >= self.seuil
+
+@dataclass
+class PerteJouissance:
+    # modélise déplacement de l'objet a par coupure
+    def calcule(self, avant: Chaine, apres: Chaine) -> float:
+        return max(0.0, len(avant.items) - len(apres.items)) * 0.25
+
+@dataclass
+class Etat:
+    sujet: Sujet
+    chaine: Chaine
+    risque_effraction: float
+    perte_jouissance: float = 0.0
+
+# ---------- MTC: réservoirs, flux, contention ----------
+
+@dataclass
+class Jing:
+    niveau: float  # 0..100
+
+@dataclass
+class Qi:
+    niveau: float  # 0..100
+    dispersion: float = 0.0  # 0..1
+
+@dataclass
+class DuRen:
+    du_ouverture: float = 0.5  # 0..1
+    ren_ouverture: float = 0.5  # 0..1
+
+@dataclass
+class ContentionEnergetique:
+    # referme les pertes ("perte de yang par le bas")
+    def applique(self, qi: Qi, d: DuRen) -> Tuple[Qi, DuRen]:
+        new_disp = max(0.0, qi.dispersion - 0.2)
+        new_qi = min(100.0, qi.niveau + 5.0*(0.2 - (qi.dispersion - new_disp)))
+        return Qi(niveau=new_qi, dispersion=new_disp), DuRen(
+            du_ouverture=max(0.0, d.du_ouverture - 0.1),
+            ren_ouverture=max(0.0, d.ren_ouverture - 0.1),
+        )
+
+@dataclass
+class PerteYangBas:
+    severite: float  # 0..1
+
+    def applique(self, qi: Qi, jing: Jing) -> Tuple[Qi, Jing]:
+        leak = 10.0*self.severite
+        return Qi(niveau=max(0.0, qi.niveau - leak), dispersion=min(1.0, qi.dispersion + 0.2*self.severite)), \
+               Jing(niveau=max(0.0, jing.niveau - 2.0*self.severite))
+
+# ---------- Ponts: correspondances opératoires ----------
+
+@dataclass
+class PontLacanMTC:
+    """Traduction minimale: charge signifiante -> dispersion du qi; scansion -> contention."""
+    k_charge_to_disp: float = 0.05
+    k_coupure_to_gain: float = 6.0
+
+    def charge_vers_dispersion(self, etat: Etat, qi: Qi) -> Qi:
+        add = min(1.0, self.k_charge_to_disp * etat.risque_effraction)
+        return Qi(niveau=max(0.0, qi.niveau - 5.0*add), dispersion=min(1.0, qi.dispersion + add))
+
+    def scansion_vers_contention(self, avant: Chaine, apres: Chaine, qi: Qi, du_ren: DuRen) -> Tuple[Qi, DuRen]:
+        gain = min(100.0, self.k_coupure_to_gain * max(0, len(avant.items)-len(apres.items)))
+        new_qi = min(100.0, qi.niveau + gain*0.1)
+        new_disp = max(0.0, qi.dispersion - gain*0.01)
+        return Qi(niveau=new_qi, dispersion=new_disp), DuRen(
+            du_ouverture=max(0.0, du_ren.du_ouverture - 0.05*gain*0.01),
+            ren_ouverture=max(0.0, du_ren.ren_ouverture - 0.05*gain*0.01),
+        )
+
+# ---------- Protocole mixte: une étape ----------
+
+@dataclass
+class EtapeMixte:
+    transfert: Transfert
+    scansion: Optional[Scansion]
+    tension: EffractionSymbolique
+    pont: PontLacanMTC
+    perte: PerteJouissance
+
+    def run(self, sujet: Sujet, chaine: Chaine, qi: Qi, jing: Jing, du_ren: DuRen) -> Tuple[Etat, Qi, Jing, DuRen]:
+        etat = self.transfert.applique(sujet, chaine)
+        qi = self.pont.charge_vers_dispersion(etat, qi)
+
+        if self.scansion:
+            avant = etat.chaine
+            apres = self.scansion.apply(avant)
+            pj = self.perte.calcule(avant, apres)
+            etat = Etat(sujet=sujet, chaine=apres, risque_effraction=etat.risque_effraction, perte_jouissance=pj)
+            qi, du_ren = self.pont.scansion_vers_contention(avant, apres, qi, du_ren)
+
+        # Si effraction probable, modéliser perte de yang
+        if self.tension.teste(etat):
+            qi, jing = PerteYangBas(severite=min(1.0, etat.risque_effraction/10.0)).applique(qi, jing)
+
+        return etat, qi, jing, du_ren
+
+# ---------- Exemples d'usage minimal ----------
+
+if __name__ == "__main__":
+    # Signifiants
+    S1 = Signifiant("Nom-du-Père", master=True)
+    Sx = Signifiant("Demande", master=False)
+    Sb = Signifiant("Accusation", blocking=True)
+
+    # Sujet névrosé, chaîne et transfert
+    sujet = Sujet(structure=Structure.NEVROSE, ancrages=(S1,))
+    chaine = (Sx @ S1) @ Sb
+    transfert = Transfert(intensite=0.8)
+
+    # Réservoirs MTC
+    qi = Qi(niveau=70.0, dispersion=0.1)
+    jing = Jing(niveau=85.0)
+    du_ren = DuRen(du_ouverture=0.6, ren_ouverture=0.6)
+
+    # Étape mixte avec scansion
+    step = EtapeMixte(
+        transfert=transfert,
+        scansion=Scansion(),
+        tension=EffractionSymbolique(seuil=3.0),
+        pont=PontLacanMTC(),
+        perte=PerteJouissance(),
+    )
+
+    etat, qi2, jing2, du_ren2 = step.run(sujet, chaine, qi, jing, du_ren)
+
+    print("Chaîne avant:", [s.s for s in chaine.items])
+    print("Chaîne après:", [s.s for s in etat.chaine.items])
+    print("Risque effraction:", round(etat.risque_effraction, 2))
+    print("Perte de jouissance:", round(etat.perte_jouissance, 2))
+    print("Qi:", qi2.niveau, "dispersion:", qi2.dispersion)
+    print("Jing:", jing2.niveau)
+    print("Du/Ren:", du_ren2.du_ouverture, du_ren2.ren_ouverture)
